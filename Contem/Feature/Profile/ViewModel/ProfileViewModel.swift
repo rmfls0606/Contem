@@ -45,7 +45,8 @@ final class ProfileViewModel: ViewModelType{
             }
         }
     }
-    private let networkFollowTrigger = PassthroughSubject<Void, Never>() //디바운싱용 Subject
+    private var followDebounceTask: Task<Void, Never>?
+    private var latestFollowRequestID = 0
     weak private var coordinator: AppCoordinator?
     
     init(userId: String, coordinator: AppCoordinator){
@@ -72,19 +73,7 @@ final class ProfileViewModel: ViewModelType{
         input.followButtonTapped
             .sink { [weak self] _ in
                 guard let self else { return }
-                self.handleOptimisticFollow() //UI 먼저 업데이트
-                self.networkFollowTrigger.send(()) //서버 요청 트리거
-            }
-            .store(in: &cancellables)
-        
-        networkFollowTrigger
-            .debounce(for: .seconds(0.3), scheduler: RunLoop.main)
-            .sink { [weak self] _ in
-                guard let self else { return }
-                Task{
-                    let isFollowing = self.output.isFollowing
-                    await self.postFollowToServer(isFollowing: isFollowing)
-                }
+                self.handleFollowTap()
             }
             .store(in: &cancellables)
         
@@ -135,6 +124,31 @@ final class ProfileViewModel: ViewModelType{
             .store(in: &cancellables)
     }
     
+    private func handleFollowTap() {
+        guard currentUserId != nil,
+              output.profile != nil else {
+            output.errorMessage = "로그인 후 이용 가능합니다."
+            return
+        }
+
+        self.handleOptimisticFollow()
+
+        latestFollowRequestID += 1
+        let requestID = latestFollowRequestID
+        let isFollowing = output.isFollowing
+
+        followDebounceTask?.cancel()
+        followDebounceTask = Task { [weak self] in
+            do {
+                try await Task.sleep(for: .milliseconds(300))
+            } catch {
+                return
+            }
+
+            await self?.postFollowToServer(isFollowing: isFollowing, requestID: requestID)
+        }
+    }
+
     private func handleOptimisticFollow(){
         guard let _ = self.currentUserId,
               var _ = output.profile else{
@@ -158,17 +172,19 @@ final class ProfileViewModel: ViewModelType{
         self.output.isFollowing = rolledBackState
     }
     
-    private func postFollowToServer(isFollowing: Bool) async{
+    private func postFollowToServer(isFollowing: Bool, requestID: Int) async{
         do{
-            let response = try await NetworkService.shared.callRequest(
+            _ = try await NetworkService.shared.callRequest(
                 router: FollowRequest
                     .follow(userId: userId, isFollow: isFollowing),
                 type: FollowDTO.self
             )
-            
-            self.output.isFollowing = response.followingStatus
-            await fetchProfile()
         }catch let error as NetworkError{
+            guard latestFollowRequestID == requestID,
+                  output.isFollowing == isFollowing else {
+                return
+            }
+
             self.rollbackFollowState()
             
             if case .statusCodeError(let type) = error {
@@ -179,6 +195,11 @@ final class ProfileViewModel: ViewModelType{
             
             output.errorMessage = error.errorDescription
         }catch{
+            guard latestFollowRequestID == requestID,
+                  output.isFollowing == isFollowing else {
+                return
+            }
+
             self.rollbackFollowState()
             output.errorMessage = NetworkError.unknown(error).errorDescription
         }

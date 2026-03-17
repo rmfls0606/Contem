@@ -8,10 +8,10 @@ internal import Then
 final class ShoppingDetailViewModel: ViewModelType {
 
     private weak var coordinator: AppCoordinator?
-    
+
     private let postId: String
-    
-    private let likeNetworkTrigger = PassthroughSubject<(Bool, String), Never>()
+    private var likeDebounceTask: Task<Void, Never>?
+    private var latestLikeRequestID = 0
     
     var cancellables = Set<AnyCancellable>()
     
@@ -65,20 +65,9 @@ final class ShoppingDetailViewModel: ViewModelType {
         input.likeButtonTapped
             .sink { [weak self] postId in
                 guard let self = self else { return }
-                output.isLiked.toggle()
-                
-                likeNetworkTrigger.send((output.isLiked, postId))
-                
+                self.handleLikeTap(postId: postId)
             }
             .store(in: &cancellables)
-        
-        // 좋아요 통신
-        likeNetworkTrigger
-            .debounce(for: .seconds(0.5), scheduler: RunLoop.main)
-            .sink { [weak self] (isLiked, postId) in
-                guard let self = self else { return }
-                postLike(currentLike: output.isLiked, postId: postId)
-            }.store(in: &cancellables)
         
 
         // Share Button
@@ -140,6 +129,25 @@ final class ShoppingDetailViewModel: ViewModelType {
             }.store(in: &cancellables)
     }
 
+    private func handleLikeTap(postId: String) {
+        output.isLiked.toggle()
+
+        latestLikeRequestID += 1
+        let requestID = latestLikeRequestID
+        let isLiked = output.isLiked
+
+        likeDebounceTask?.cancel()
+        likeDebounceTask = Task { [weak self] in
+            do {
+                try await Task.sleep(for: .milliseconds(500))
+            } catch {
+                return
+            }
+
+            await self?.postLike(postId: postId, isLiked: isLiked, requestID: requestID)
+        }
+    }
+
     // 상품 상세 정보 불러오기
     private func fetchDetail() {
         output.isLoading = true
@@ -166,17 +174,17 @@ final class ShoppingDetailViewModel: ViewModelType {
         }
     }
     
-    private func postLike(currentLike: Bool, postId: String) {
-        Task { [weak self] in
-            guard let self = self else { return }
-            do {
-                let router = PostRequest.like(postId: postId, isLiked: output.isLiked)
-                let _ = try await NetworkService.shared.callRequest(router: router, type: PostLikeDTO.self)
-            } catch {
-                await MainActor.run {
-                    self.output.isLiked.toggle()
-                }
+    private func postLike(postId: String, isLiked: Bool, requestID: Int) async {
+        do {
+            let router = PostRequest.like(postId: postId, isLiked: isLiked)
+            let _ = try await NetworkService.shared.callRequest(router: router, type: PostLikeDTO.self)
+        } catch {
+            guard latestLikeRequestID == requestID,
+                  output.isLiked == isLiked else {
+                return
             }
+
+            output.isLiked.toggle()
         }
     }
 

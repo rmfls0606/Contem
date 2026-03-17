@@ -37,7 +37,8 @@ final class StyleDetailViewModel: ViewModelType{
     private let postId: String
     private weak var coordinator: AppCoordinator?
     private var currentUserId: String? //캐싱된 UserID
-    private let networkLikeTrigger = PassthroughSubject<Void, Never>() //디바운싱용 Subject
+    private var likeDebounceTask: Task<Void, Never>?
+    private var latestLikeRequestID = 0
 
     init(postId: String, coordinator: AppCoordinator) {
         self.postId = postId
@@ -70,24 +71,7 @@ final class StyleDetailViewModel: ViewModelType{
         input.likebuttonTapped
             .sink { [weak self] _ in
                 guard let self else { return }
-                self.handleOptimisticLike() //UI 먼저 업데이트
-                self.networkLikeTrigger.send(()) //서버 요청 트리거
-            }
-            .store(in: &cancellables)
-        
-        //디바운싱 체이 -> 서버 요청
-        networkLikeTrigger
-            .debounce(for: .seconds(0.3), scheduler: RunLoop.main)
-            .sink { [weak self] _ in
-                guard let self,
-                      let style = output.style,
-                      let userId = self.currentUserId else { return }
-                
-                Task{
-                    //서버에 보낼 현재 상태는 Model의 상태를 기준으로 함\
-                    let isLiked = style.likes.contains(userId)
-                    await self.postLikeToServer(postId: self.postId, isLiked: isLiked)
-                }
+                self.handleLikeTap()
             }
             .store(in: &cancellables)
         
@@ -112,6 +96,32 @@ final class StyleDetailViewModel: ViewModelType{
     }
     
     //MARK: - Functions
+    private func handleLikeTap() {
+        guard let userId = currentUserId else {
+            output.errorMessage = "로그인 후 이용 가능합니다."
+            return
+        }
+
+        self.handleOptimisticLike()
+
+        guard let isLiked = output.style?.likes.contains(userId) else { return }
+
+        latestLikeRequestID += 1
+        let requestID = latestLikeRequestID
+
+        likeDebounceTask?.cancel()
+        likeDebounceTask = Task { [weak self] in
+            do {
+                try await Task.sleep(for: .milliseconds(300))
+            } catch {
+                return
+            }
+
+            guard let self else { return }
+            await self.postLikeToServer(postId: self.postId, isLiked: isLiked, requestID: requestID)
+        }
+    }
+
     //좋아요 UI 즉시 업데이트(낙관적 업데이트)
     private func handleOptimisticLike(){
         guard let userId = currentUserId,
@@ -136,12 +146,17 @@ final class StyleDetailViewModel: ViewModelType{
     }
     
     //좋아요 서버 요청
-    private func postLikeToServer(postId: String, isLiked: Bool) async{
+    private func postLikeToServer(postId: String, isLiked: Bool, requestID: Int) async{
         do{
-            let response = try await NetworkService.shared.callRequest(router: PostRequest.like(postId: postId, isLiked: isLiked), type: PostLikeDTO.self)
-            
-            self.output.isStyleLiked = response.isLiked
+            _ = try await NetworkService.shared.callRequest(router: PostRequest.like(postId: postId, isLiked: isLiked), type: PostLikeDTO.self)
         }catch let error as NetworkError{
+            guard latestLikeRequestID == requestID,
+                  let userId = currentUserId,
+                  let style = output.style,
+                  style.likes.contains(userId) == isLiked else {
+                return
+            }
+
             self.rollbackLikeState()
             
             if case .statusCodeError(let type) = error {
@@ -152,6 +167,13 @@ final class StyleDetailViewModel: ViewModelType{
             
             output.errorMessage = error.errorDescription
         }catch{
+            guard latestLikeRequestID == requestID,
+                  let userId = currentUserId,
+                  let style = output.style,
+                  style.likes.contains(userId) == isLiked else {
+                return
+            }
+
             self.rollbackLikeState()
             output.errorMessage = NetworkError.unknown(error).errorDescription
         }

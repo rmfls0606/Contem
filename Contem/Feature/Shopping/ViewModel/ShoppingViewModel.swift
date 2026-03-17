@@ -4,7 +4,8 @@ import Combine
 @MainActor
 final class ShoppingViewModel: ViewModelType {
     private weak var coordinator: AppCoordinator?
-    private let likeNetworkTrigger = PassthroughSubject<(Bool, String), Never>()
+    private var likeDebounceTasks: [String: Task<Void, Never>] = [:]
+    private var latestLikeRequestIDs: [String: Int] = [:]
     
     var cancellables = Set<AnyCancellable>()
     var input = Input()
@@ -90,20 +91,10 @@ final class ShoppingViewModel: ViewModelType {
             }.store(in: &cancellables)
         
         input.likeButtonTapped
-             .sink { [weak self] postId in
-                 guard let self = self else { return }
-                 if let index = output.products.firstIndex(where: { $0.id == postId }) {
-                     self.output.products[index].toggleLike()
-                     let currentState = self.output.products[index].isLiked
-                     likeNetworkTrigger.send((currentState, postId))
-                 }
-             }.store(in: &cancellables)
-             
-         likeNetworkTrigger
-             .debounce(for: .seconds(0.5), scheduler: RunLoop.main)
-             .sink { [weak self] (isLiked, postId) in
-                 self?.postLike(currentLike: isLiked, postId: postId)
-             }.store(in: &cancellables)
+            .sink { [weak self] postId in
+                guard let self = self else { return }
+                self.handleLikeTap(postId: postId)
+            }.store(in: &cancellables)
             
         input.loadMoreTrigger
             .sink { [weak self] _ in
@@ -118,6 +109,25 @@ final class ShoppingViewModel: ViewModelType {
 
 // MARK: - Logic Extension
 extension ShoppingViewModel {
+    private func handleLikeTap(postId: String) {
+        guard let index = output.products.firstIndex(where: { $0.id == postId }) else { return }
+
+        output.products[index].toggleLike()
+        let isLiked = output.products[index].isLiked
+        let requestID = (latestLikeRequestIDs[postId] ?? 0) + 1
+        latestLikeRequestIDs[postId] = requestID
+
+        likeDebounceTasks[postId]?.cancel()
+        likeDebounceTasks[postId] = Task { [weak self] in
+            do {
+                try await Task.sleep(for: .milliseconds(500))
+            } catch {
+                return
+            }
+
+            await self?.postLike(postId: postId, isLiked: isLiked, requestID: requestID)
+        }
+    }
     
    
     private func isServerTarget(main: TabCategory, sub: SubCategory) -> Bool {
@@ -308,19 +318,18 @@ extension ShoppingViewModel {
         }
     }
     
-    private func postLike(currentLike: Bool, postId: String) {
-        Task { [weak self] in
-            guard let self = self else { return }
-            do {
-                let router = PostRequest.like(postId: postId, isLiked: currentLike)
-                let _ = try await NetworkService.shared.callRequest(router: router, type: PostLikeDTO.self)
-            } catch {
-                await MainActor.run {
-                    if let index = self.output.products.firstIndex(where: { $0.id == postId }) {
-                        self.output.products[index].toggleLike()
-                    }
-                }
+    private func postLike(postId: String, isLiked: Bool, requestID: Int) async {
+        do {
+            let router = PostRequest.like(postId: postId, isLiked: isLiked)
+            let _ = try await NetworkService.shared.callRequest(router: router, type: PostLikeDTO.self)
+        } catch {
+            guard latestLikeRequestIDs[postId] == requestID,
+                  let index = output.products.firstIndex(where: { $0.id == postId }),
+                  output.products[index].isLiked == isLiked else {
+                return
             }
+
+            output.products[index].toggleLike()
         }
     }
 }

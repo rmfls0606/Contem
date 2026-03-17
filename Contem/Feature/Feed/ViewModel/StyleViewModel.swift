@@ -11,7 +11,8 @@ final class StyleViewModel: ViewModelType {
     @Published var currentUserId: String? //캐싱된 UserID
     
     private var coordinator: AppCoordinator
-    private let networkLikeTrigger = PassthroughSubject<(String, Bool), Never>() //디바운싱용 Subject
+    private var likeDebounceTasks: [String: Task<Void, Never>] = [:]
+    private var latestLikeRequestIDs: [String: Int] = [:]
     
     struct Input {
         let viewOnTask = PassthroughSubject<Void, Never>()
@@ -83,21 +84,7 @@ final class StyleViewModel: ViewModelType {
         input.likeButtonTapped
             .sink { [weak self] postId in
                 guard let self = self else { return }
-                
-                let isLiked = !(self.output.feeds.first { $0.postId == postId }?.likes.contains(self.currentUserId ?? "") ?? false)
-                self.handleOptimisticLike(postId: postId)
-                self.networkLikeTrigger.send((postId, isLiked))
-            }
-            .store(in: &cancellables)
-            
-        networkLikeTrigger
-            .debounce(for: .seconds(0.3), scheduler: RunLoop.main)
-            .sink { [weak self] (postId, isLiked) in
-                guard let self = self else { return }
-                
-                Task {
-                    await self.postLikeToServer(postId: postId, isLiked: isLiked)
-                }
+                self.handleLikeTap(postId: postId)
             }
             .store(in: &cancellables)
     }
@@ -106,6 +93,33 @@ final class StyleViewModel: ViewModelType {
 // MARK: - Methods
 
 extension StyleViewModel {
+    private func handleLikeTap(postId: String) {
+        guard currentUserId != nil else {
+            output.errorMessage = "로그인 후 이용 가능합니다."
+            return
+        }
+
+        self.handleOptimisticLike(postId: postId)
+
+        guard let isLiked = output.feeds.first(where: { $0.postId == postId })?.likes.contains(currentUserId ?? "") else {
+            return
+        }
+
+        let requestID = (latestLikeRequestIDs[postId] ?? 0) + 1
+        latestLikeRequestIDs[postId] = requestID
+
+        likeDebounceTasks[postId]?.cancel()
+        likeDebounceTasks[postId] = Task { [weak self] in
+            do {
+                try await Task.sleep(for: .milliseconds(300))
+            } catch {
+                return
+            }
+
+            await self?.postLikeToServer(postId: postId, isLiked: isLiked, requestID: requestID)
+        }
+    }
+
     
     //좋아요 UI 즉시 업데이트(낙관적 업데이트)
     private func handleOptimisticLike(postId: String){
@@ -128,10 +142,17 @@ extension StyleViewModel {
     }
 
     //좋아요 서버 요청
-    private func postLikeToServer(postId: String, isLiked: Bool) async{
+    private func postLikeToServer(postId: String, isLiked: Bool, requestID: Int) async{
         do{
             _ = try await NetworkService.shared.callRequest(router: PostRequest.like(postId: postId, isLiked: isLiked), type: PostLikeDTO.self)
         }catch let error as NetworkError{
+            guard latestLikeRequestIDs[postId] == requestID,
+                  let userId = currentUserId,
+                  let index = output.feeds.firstIndex(where: { $0.postId == postId }),
+                  output.feeds[index].likes.contains(userId) == isLiked else {
+                return
+            }
+
             self.rollbackLikeState(postId: postId)
             
             if case .statusCodeError(let type) = error {
@@ -142,6 +163,13 @@ extension StyleViewModel {
             
             output.errorMessage = error.errorDescription
         }catch{
+            guard latestLikeRequestIDs[postId] == requestID,
+                  let userId = currentUserId,
+                  let index = output.feeds.firstIndex(where: { $0.postId == postId }),
+                  output.feeds[index].likes.contains(userId) == isLiked else {
+                return
+            }
+
             self.rollbackLikeState(postId: postId)
             output.errorMessage = NetworkError.unknown(error).errorDescription
         }
