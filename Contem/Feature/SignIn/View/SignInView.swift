@@ -57,6 +57,21 @@ struct SignInView: View {
                     .cornerRadius(.spacing16)
             }
             .disabled(!viewModel.output.isLoginEnabled)
+
+            Button(action: {
+                viewModel.input.signUpButtonTapped.send()
+            }) {
+                Text("회원가입")
+                    .font(.bodyMedium)
+                    .foregroundColor(.gray700)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, .spacing12)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: .spacing16)
+                            .stroke(.gray300, lineWidth: 1)
+                    )
+            }
+            .buttonStyle(.plain)
             
             // 구분 선
             HStack {
@@ -70,80 +85,46 @@ struct SignInView: View {
                 
                 VStack { Divider() }
             }
-            
-            Button {
-                if UserApi.isKakaoTalkLoginAvailable() {
-                    UserApi.shared.loginWithKakaoTalk { (oauthToken, error) in
-                        if let error = error {
-                            print(error)
-                        } else {
-                            viewModel.input.kakaoLoginButtonTapped.send(oauthToken?.accessToken)
+            HStack(spacing: .spacing16) {
+                Button {
+                    if UserApi.isKakaoTalkLoginAvailable() {
+                        UserApi.shared.loginWithKakaoTalk { (oauthToken, error) in
+                            if let error = error {
+                                print(error)
+                            } else {
+                                viewModel.input.kakaoLoginButtonTapped.send(oauthToken?.accessToken)
+                            }
+                        }
+                    } else {
+                        UserApi.shared.loginWithKakaoAccount { (oauthToken, error) in
+                            if let error = error {
+                                print(error)
+                            } else {
+                                viewModel.input.kakaoLoginButtonTapped.send(oauthToken?.accessToken)
+                            }
                         }
                     }
-                } else {
-                    UserApi.shared.loginWithKakaoAccount { (oauthToken, error) in
-                        if let error = error {
-                            print(error)
-                        } else {
-                            viewModel.input.kakaoLoginButtonTapped.send(oauthToken?.accessToken)
-                        }
-                    }
+                } label: {
+                    SocialCircleButton(
+                        backgroundColor: .kakao,
+                        foregroundColor: .primary100,
+                        systemImage: "message.fill"
+                    )
                 }
-            } label: {
-                HStack(alignment: .center, spacing: .spacing8){
-                    Image(systemName: "message.fill")
-                        .font(.bodyLarge)
-                        .aspectRatio(contentMode: .fit)
-                        .foregroundColor(.primary100)
-                    
-                    
-                    Text("카카오 로그인")
-                        .font(.bodyLarge)
-                        .foregroundStyle(.primary100)
-                        .opacity(0.85)
-                    
-                }//: HSTACK
-                .frame(maxWidth: .infinity)
-                .padding(.horizontal(.spacing16))
-                .padding(.vertical(.spacing16))
-                .background(.kakao)
-                .cornerRadiusMedium()
-            }
-            .buttonStyle(.plain)
+                .buttonStyle(.plain)
 
-            
-            Button(action: {
-                // ViewModel의 Input 트리거
-                viewModel.input.appleLoginButtonTapped.send(())
-            }) {
-                SignInWithAppleButton(
-                    onRequest: { _ in },
-                    onCompletion: { _ in }
-                )
-                .frame(height: 52)
-                .cornerRadius(.spacing12)
-                .signInWithAppleButtonStyle(.black)
-                .overlay {
-                    // 버튼의 기본 제스처를 막고 ViewModel의 Input을 트리거
-                    Color.black.opacity(0.001)
-                        .onTapGesture {
-                            viewModel.input.appleLoginButtonTapped.send(())
-                        }
+                Button {
+                    viewModel.input.appleLoginButtonTapped.send(())
+                } label: {
+                    SocialCircleButton(
+                        backgroundColor: .black,
+                        foregroundColor: .white,
+                        systemImage: "apple.logo"
+                    )
                 }
-//                ZStack {
-//                    Circle()
-//                        .fill(Color.black)
-//                        .frame(width: 50, height: 50)
-//                        .shadow(color: .black.opacity(0.1), radius: 4, x: 0, y: 2)
-//                    
-//                    Image(systemName: "apple.logo")
-//                        .resizable()
-//                        .aspectRatio(contentMode: .fit)
-//                        .frame(width: 22, height: 22)
-//                        .foregroundColor(.white)
-//                        .offset(y: -2)
-//                }
+                .buttonStyle(.plain)
             }
+            .padding(.top, .spacing8)
         }
         .padding(.horizontal, .spacing16)
         .alert("알림", isPresented: $viewModel.output.showAlert) {
@@ -181,4 +162,23 @@ struct SignInView: View {
 //        }
     }
     
+}
+
+private struct SocialCircleButton: View {
+    let backgroundColor: Color
+    let foregroundColor: Color
+    let systemImage: String
+    
+    var body: some View {
+        ZStack {
+            Circle()
+                .fill(backgroundColor)
+                .frame(width: 56, height: 56)
+                .shadow(color: .black.opacity(0.08), radius: 10, x: 0, y: 4)
+            
+            Image(systemName: systemImage)
+                .font(.system(size: 22, weight: .semibold))
+                .foregroundColor(foregroundColor)
+        }
+    }
 }

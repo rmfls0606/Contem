@@ -26,6 +26,7 @@ final class SignInViewModel: ViewModelType {
 
     struct Input {
         let loginButtonTapped = PassthroughSubject<Void, Never>()
+        let signUpButtonTapped = PassthroughSubject<Void, Never>()
         let appleLoginButtonTapped = PassthroughSubject<Void, Never>()
         let kakaoLoginButtonTapped = PassthroughSubject<String?, Never>()
     }
@@ -61,6 +62,13 @@ final class SignInViewModel: ViewModelType {
                 Task{
                     await self.signin()
                 }
+            }
+            .store(in: &cancellables)
+
+        input.signUpButtonTapped
+            .sink { [weak self] _ in
+                self?.output.alertMessage = "회원가입 화면은 아직 연결되지 않았습니다."
+                self?.output.showAlert = true
             }
             .store(in: &cancellables)
         
