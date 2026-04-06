@@ -12,6 +12,7 @@ final class ShoppingDetailViewModel: ViewModelType {
     private let postId: String
     private var likeDebounceTask: Task<Void, Never>?
     private var latestLikeRequestID = 0
+    private var confirmedIsLiked = false
     
     var cancellables = Set<AnyCancellable>()
     
@@ -155,21 +156,12 @@ final class ShoppingDetailViewModel: ViewModelType {
 
         Task { [weak self] in
             guard let self = self else { return }
-
-            do {
-                let router = PostRequest.post(postId: postId)
-                let result = try await NetworkService.shared.callRequest(router: router, type: PostDTO.self)
-                let detailInfo = ShoppingDetailInfo(from: result)
-                await MainActor.run {
-                    self.output.detailInfo = detailInfo
-                    self.output.isLiked = detailInfo.isLiked
-                    self.output.isLoading = false
-                }
-            } catch {
-                await MainActor.run {
-                    self.output.errorMessage = error.localizedDescription
-                    self.output.isLoading = false
-                }
+            let detailInfo = ShoppingDetailInfo.mock(postId: self.postId)
+            await MainActor.run {
+                self.output.detailInfo = detailInfo
+                self.output.isLiked = detailInfo.isLiked
+                self.confirmedIsLiked = detailInfo.isLiked
+                self.output.isLoading = false
             }
         }
     }
@@ -178,13 +170,15 @@ final class ShoppingDetailViewModel: ViewModelType {
         do {
             let router = PostRequest.like(postId: postId, isLiked: isLiked)
             let _ = try await NetworkService.shared.callRequest(router: router, type: PostLikeDTO.self)
+            guard latestLikeRequestID == requestID else { return }
+            confirmedIsLiked = isLiked
         } catch {
             guard latestLikeRequestID == requestID,
                   output.isLiked == isLiked else {
                 return
             }
 
-            output.isLiked.toggle()
+            output.isLiked = confirmedIsLiked
         }
     }
 

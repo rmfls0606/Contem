@@ -6,6 +6,7 @@ final class ShoppingViewModel: ViewModelType {
     private weak var coordinator: AppCoordinator?
     private var likeDebounceTasks: [String: Task<Void, Never>] = [:]
     private var latestLikeRequestIDs: [String: Int] = [:]
+    private var confirmedLikeStates: [String: Bool] = [:]
     
     var cancellables = Set<AnyCancellable>()
     var input = Input()
@@ -128,6 +129,26 @@ extension ShoppingViewModel {
             await self?.postLike(postId: postId, isLiked: isLiked, requestID: requestID)
         }
     }
+
+    private func rollbackLike(postId: String) {
+        guard let index = output.products.firstIndex(where: { $0.id == postId }),
+              let confirmedIsLiked = confirmedLikeStates[postId] else { return }
+
+        let currentlyLiked = output.products[index].isLiked
+        guard currentlyLiked != confirmedIsLiked else { return }
+
+        output.products[index].toggleLike()
+    }
+
+    private func updateConfirmedLikeState(postId: String, isLiked: Bool) {
+        confirmedLikeStates[postId] = isLiked
+    }
+
+    private func cacheConfirmedLikeStates(for products: [ShoppingProduct]) {
+        for product in products {
+            confirmedLikeStates[product.id] = product.isLiked
+        }
+    }
     
    
     private func isServerTarget(main: TabCategory, sub: SubCategory) -> Bool {
@@ -146,6 +167,7 @@ extension ShoppingViewModel {
      
         else {
             output.products = self.generateMockProducts(main: main, sub: sub)
+            self.cacheConfirmedLikeStates(for: output.products)
             output.canLoadMore = false
             output.nextCursor = nil
         }
@@ -294,6 +316,7 @@ extension ShoppingViewModel {
              
              let productList = ShoppingProductList(from: result)
              output.products = productList.products
+             cacheConfirmedLikeStates(for: output.products)
              output.nextCursor = result.nextCursor
              output.canLoadMore = result.nextCursor != "0"
          } catch {
@@ -311,6 +334,7 @@ extension ShoppingViewModel {
             let result = try await NetworkService.shared.callRequest(router: router, type: PostListDTO.self)
             let productList = ShoppingProductList(from: result)
             output.products.append(contentsOf: productList.products)
+            cacheConfirmedLikeStates(for: productList.products)
             output.nextCursor = result.nextCursor
             output.canLoadMore = result.nextCursor != "0"
         } catch {
@@ -322,6 +346,8 @@ extension ShoppingViewModel {
         do {
             let router = PostRequest.like(postId: postId, isLiked: isLiked)
             let _ = try await NetworkService.shared.callRequest(router: router, type: PostLikeDTO.self)
+            guard latestLikeRequestIDs[postId] == requestID else { return }
+            updateConfirmedLikeState(postId: postId, isLiked: isLiked)
         } catch {
             guard latestLikeRequestIDs[postId] == requestID,
                   let index = output.products.firstIndex(where: { $0.id == postId }),
@@ -329,7 +355,7 @@ extension ShoppingViewModel {
                 return
             }
 
-            output.products[index].toggleLike()
+            rollbackLike(postId: postId)
         }
     }
 }

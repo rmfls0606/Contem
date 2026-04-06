@@ -13,6 +13,7 @@ final class StyleViewModel: ViewModelType {
     private var coordinator: AppCoordinator
     private var likeDebounceTasks: [String: Task<Void, Never>] = [:]
     private var latestLikeRequestIDs: [String: Int] = [:]
+    private var confirmedLikeStates: [String: Bool] = [:]
     
     struct Input {
         let viewOnTask = PassthroughSubject<Void, Never>()
@@ -136,8 +137,23 @@ extension StyleViewModel {
     //롤백 함수
     private func rollbackLikeState(postId: String){
         guard let userId = currentUserId else { return }
-        if let index = output.feeds.firstIndex(where: { $0.postId == postId }) {
-            output.feeds[index].toggleLike(userId: userId)
+        guard let confirmedIsLiked = confirmedLikeStates[postId],
+              let index = output.feeds.firstIndex(where: { $0.postId == postId }) else { return }
+
+        let currentlyLiked = output.feeds[index].likes.contains(userId)
+        guard currentlyLiked != confirmedIsLiked else { return }
+
+        output.feeds[index].toggleLike(userId: userId)
+    }
+
+    private func updateConfirmedLikeState(postId: String, isLiked: Bool) {
+        confirmedLikeStates[postId] = isLiked
+    }
+
+    private func cacheConfirmedLikeStates(for feeds: [FeedModel]) {
+        guard let userId = currentUserId else { return }
+        for feed in feeds {
+            confirmedLikeStates[feed.postId] = feed.likes.contains(userId)
         }
     }
 
@@ -145,6 +161,8 @@ extension StyleViewModel {
     private func postLikeToServer(postId: String, isLiked: Bool, requestID: Int) async{
         do{
             _ = try await NetworkService.shared.callRequest(router: PostRequest.like(postId: postId, isLiked: isLiked), type: PostLikeDTO.self)
+            guard latestLikeRequestIDs[postId] == requestID else { return }
+            self.updateConfirmedLikeState(postId: postId, isLiked: isLiked)
         }catch let error as NetworkError{
             guard latestLikeRequestIDs[postId] == requestID,
                   let userId = currentUserId,
@@ -210,6 +228,7 @@ extension StyleViewModel {
                         likes: post.likes
                     )
             }
+            cacheConfirmedLikeStates(for: output.feeds)
             output.nextCursor = response.nextCursor
             output.canLoadMore = response.nextCursor != "0"
             loadHashtags()
@@ -250,6 +269,7 @@ extension StyleViewModel {
                     )
             }
             output.feeds.append(contentsOf: newFeeds)
+            cacheConfirmedLikeStates(for: newFeeds)
             output.nextCursor = response.nextCursor
             output.canLoadMore = response.nextCursor != "0"
             loadHashtags()

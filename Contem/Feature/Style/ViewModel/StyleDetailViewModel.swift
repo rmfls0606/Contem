@@ -39,6 +39,7 @@ final class StyleDetailViewModel: ViewModelType{
     private var currentUserId: String? //캐싱된 UserID
     private var likeDebounceTask: Task<Void, Never>?
     private var latestLikeRequestID = 0
+    private var confirmedIsLiked = false
 
     init(postId: String, coordinator: AppCoordinator) {
         self.postId = postId
@@ -140,15 +141,19 @@ final class StyleDetailViewModel: ViewModelType{
     private func rollbackLikeState(){
         guard let userId = currentUserId,
               var style = output.style else { return }
-        style.toggleLike(userId: userId) //상태 되돌리기
+        let currentlyLiked = style.likes.contains(userId)
+        guard currentlyLiked != confirmedIsLiked else { return }
+        style.toggleLike(userId: userId)
         output.style = style
-        output.isStyleLiked.toggle()
+        output.isStyleLiked = confirmedIsLiked
     }
     
     //좋아요 서버 요청
     private func postLikeToServer(postId: String, isLiked: Bool, requestID: Int) async{
         do{
             _ = try await NetworkService.shared.callRequest(router: PostRequest.like(postId: postId, isLiked: isLiked), type: PostLikeDTO.self)
+            guard latestLikeRequestID == requestID else { return }
+            confirmedIsLiked = isLiked
         }catch let error as NetworkError{
             guard latestLikeRequestID == requestID,
                   let userId = currentUserId,
@@ -235,78 +240,57 @@ final class StyleDetailViewModel: ViewModelType{
     }
     
     private func fetchProductDetailsForTags() async {
-        print("Starting to fetch product details for tags...")
-        await withTaskGroup(of: (Int, Int, Result<PostDTO, Error>).self) { group in
-            for (pageIndex, tags) in output.tags {
-                for (tagIndex, tag) in tags.enumerated() {
-                    group.addTask {
-                        do {
-                            let response = try await NetworkService.shared.callRequest(
-                                router: PostRequest.post(postId: tag.postId),
-                                type: PostDTO.self
-                            )
-                            return (pageIndex, tagIndex, .success(response))
-                        } catch {
-                            return (pageIndex, tagIndex, .failure(error))
-                        }
-                    }
-                }
+        var newTags = output.tags
+
+        for (pageIndex, tags) in output.tags {
+            for (tagIndex, tag) in tags.enumerated() {
+                let response = await MockStyleDataStore.shared.productDTO(postId: tag.postId)
+                let updatedTag = StyleTag(
+                    relX: tag.relX,
+                    relY: tag.relY,
+                    postId: tag.postId,
+                    title: response.title,
+                    price: response.price?.description,
+                    imageURL: response.imageURLs.first
+                )
+                newTags[pageIndex]?[tagIndex] = updatedTag
             }
-            
-            var newTags = self.output.tags
-            for await (pageIndex, tagIndex, result) in group {
-                switch result {
-                case .success(let response):
-                    print("Successfully fetched details for postId \(response.postID)")
-                    let updatedTag = StyleTag(
-                        relX: newTags[pageIndex]![tagIndex].relX,
-                        relY: newTags[pageIndex]![tagIndex].relY,
-                        postId: newTags[pageIndex]![tagIndex].postId,
-                        title: response.title,
-                        price: response.price?.description,
-                        imageURL: response.imageURLs.first
-                    )
-                    newTags[pageIndex]?[tagIndex] = updatedTag
-                case .failure(let error):
-                    print("Error fetching product detail for tag at page \(pageIndex), index \(tagIndex): \(error)")
-                }
-            }
-            
-            await MainActor.run {
-                self.output.tags = newTags
-                self.output.shopTheLookProducts = newTags.values.flatMap { $0 }
-                print("Finished fetching product details. Final tags: \(self.output.tags)")
-            }
+        }
+
+        await MainActor.run {
+            self.output.tags = newTags
+            self.output.shopTheLookProducts = newTags
+                .keys
+                .sorted()
+                .compactMap { newTags[$0] }
+                .flatMap { $0 }
         }
     }
     
     //MARK: - Network
     func fetchStyleDetail() async{
-        output.isLoading = true
+        await MainActor.run {
+            output.isLoading = true
+            output.errorMessage = nil
+        }
 
-        Task{
-            do{
-                let response = try await NetworkService.shared.callRequest(
-                    router: PostRequest.post(postId: postId), //실제로 넘겨 받은 id로 넣기
-                    type: PostDTO.self
-                )
-                
-                let entity = response.toEntity()
-                output.style = entity
-                preParseAllTags(entity: entity)
-                await fetchProductDetailsForTags()
-                
-                let isLiked: Bool
-                if let userId = currentUserId{
-                    isLiked = entity.likes.contains(userId)
-                }else{
-                    isLiked = false
-                }
-                output.isStyleLiked = isLiked
-            }catch{
-                output.errorMessage = error.localizedDescription
+        let response = await MockStyleDataStore.shared.styleDetailDTO(postId: postId)
+        let entity = response.toEntity()
+
+        await MainActor.run {
+            output.style = entity
+            preParseAllTags(entity: entity)
+            if let userId = currentUserId {
+                output.isStyleLiked = entity.likes.contains(userId)
+            } else {
+                output.isStyleLiked = false
             }
-            
+            confirmedIsLiked = output.isStyleLiked
+        }
+
+        await fetchProductDetailsForTags()
+
+        await MainActor.run {
             output.isLoading = false
         }
     }
