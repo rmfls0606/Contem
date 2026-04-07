@@ -7,15 +7,13 @@
 
 import SwiftUI
 import Combine
-import RealmSwift
-import Kingfisher
 import PhotosUI
 
 // 이미지 프리뷰를 위한 Identifiable 래퍼
 struct IdentifiableImageData: Identifiable, Equatable { // Equatable 추가
     let id = UUID() // Truly unique ID for the IdentifiableImageData struct itself
     let data: Data
-    let photosPickerItem: PhotosPickerItem // 원본 PhotosPickerItem 자체를 저장
+    let photosPickerItem: PhotosPickerItem
     
     // Equatable 구현 (Data 비교는 오버헤드가 크므로 id만 비교)
     static func == (lhs: IdentifiableImageData, rhs: IdentifiableImageData) -> Bool {
@@ -23,10 +21,31 @@ struct IdentifiableImageData: Identifiable, Equatable { // Equatable 추가
     }
 }
 
+private enum GalleryImageSource: Identifiable, Equatable {
+    case data(IdentifiableImageData)
+    case url(URL)
+
+    var id: String {
+        switch self {
+        case .data(let image):
+            return image.id.uuidString
+        case .url(let url):
+            return url.absoluteString
+        }
+    }
+}
+
+private struct ImageGalleryState: Identifiable {
+    let id = UUID()
+    let items: [GalleryImageSource]
+    let initialIndex: Int
+}
+
 struct ChattingView: View {
     @ObservedObject private var viewModel: ChattingViewModel
     
     @State private var scrollWorkItem: DispatchWorkItem?
+    @State private var galleryState: ImageGalleryState?
     
     init(viewModel: ChattingViewModel) {
         self.viewModel = viewModel
@@ -35,10 +54,14 @@ struct ChattingView: View {
     var body: some View {
         VStack(spacing: 0) {
             messageListView
-            MessageInputView(viewModel: viewModel)
+            MessageInputView(viewModel: viewModel, galleryState: $galleryState)
+                .background(Color.gray25.ignoresSafeArea(edges: .bottom))
         }
         .navigationTitle(viewModel.output.opponentNickname ?? "채팅")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbarColorScheme(.light, for: .navigationBar)
+        .toolbarBackground(Color.primary0, for: .navigationBar)
+        .toolbarBackground(.visible, for: .navigationBar)
         .onAppear {
             viewModel.input.appear.send(())
         }
@@ -65,18 +88,20 @@ struct ChattingView: View {
                 dismissButton: .default(Text("OK"))
             )
         }
-        .background(Color("gray100"))
+        .background(Color.gray25)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            hideKeyboard()
+        }
+        .fullScreenCover(item: $galleryState) { state in
+            PreviewGalleryViewer(state: state)
+        }
     }
     
     private var messageListView: some View {
         ScrollView {
             ScrollViewReader { scrollViewProxy in
-                LazyVStack(spacing: 16) {
-                    ChatHeaderView(
-                        nickname: viewModel.output.opponentNickname,
-                        profileImage: viewModel.output.opponentProfileImage
-                    )
-                    
+                LazyVStack(spacing: .spacing16) {
                     if let messages = viewModel.output.messages {
                         ForEach(messages) { message in
                             MessageRowView(
@@ -85,6 +110,12 @@ struct ChattingView: View {
                                 onImageLoaded: {
                                     // 이미지가 로드되면 항상 디바운스 스크롤 호출
                                     debounceScroll(proxy: scrollViewProxy)
+                                },
+                                onImageTap: { selectedIndex, urls in
+                                    galleryState = ImageGalleryState(
+                                        items: urls.map { .url($0) },
+                                        initialIndex: selectedIndex
+                                    )
                                 }
                             )
                             .id(message.id)
@@ -96,8 +127,9 @@ struct ChattingView: View {
                     // 하단 패딩을 위한 Spacer 추가 (높이 1로 설정)
                     Spacer().frame(height: 1).id("bottom-content-padding")
                 }
-                .padding(.horizontal)
-                .padding(.top)
+                .padding(.horizontal, .spacing16)
+                .padding(.top, .spacing12)
+                .padding(.bottom, .spacing24)
                 .onAppear {
                     // 뷰가 나타날 때, 컨텐츠가 있을 수 있으므로 디바운스 스크롤 호출
                     debounceScroll(proxy: scrollViewProxy)
@@ -123,7 +155,7 @@ struct ChattingView: View {
                 })
             }
         }
-        .background(.white)
+        .background(Color.clear)
     }
     
     // 스크롤 대상을 변경
@@ -157,24 +189,27 @@ private struct ImagePreviewItemView: View {
                 .resizable()
                 .scaledToFill()
                 .frame(width: 60, height: 60)
-                .clipShape(RoundedRectangle(cornerRadius: 8)) // Image 자체에 clipShape 적용
+                .clipShape(RoundedRectangle(cornerRadius: 8))
         }
     }
 }
 
 private struct MessageInputView: View {
     @ObservedObject var viewModel: ChattingViewModel
+    @Binding var galleryState: ImageGalleryState?
     @State private var messageText: String = ""
-    @State private var selectedImages: [PhotosPickerItem] = [] // PhotosPicker용 원본 아이템
-    @State private var previewImages: [IdentifiableImageData] = [] // 미리보기용 Identifiable 이미지 데이터
-    @State private var imagesDataToSend: [Data] = [] // 전송용 Data 배열
+    @State private var selectedImages: [PhotosPickerItem] = []
+    @State private var previewImages: [IdentifiableImageData] = []
+    @State private var imagesDataToSend: [Data] = []
     
     var body: some View {
         VStack(spacing: 0) {
-            imagePreviewSection // extracted computed property
-            inputBarSection // extracted computed property
+            imagePreviewSection
+            inputBarSection
         }
-        .padding(.top, CGFloat.spacing16) // 여기에 inputView의 상단 패딩 추가
+        .padding(.top, CGFloat.spacing16)
+        .padding(.bottom, .spacing12)
+        .background(.primary0)
         .onChange(of: selectedImages) { newItems in
             Task {
                 var newPreview: [IdentifiableImageData] = []
@@ -187,7 +222,6 @@ private struct MessageInputView: View {
                     }
                 }
                 
-                // 모든 로드가 끝난 후 MainActor에서 상태 한 번에 업데이트
                 await MainActor.run {
                     previewImages = newPreview
                     imagesDataToSend = newImagesDataToSend
@@ -202,11 +236,11 @@ private struct MessageInputView: View {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: .spacing8) {
                         ForEach(previewImages) { identifiableImage in
-                            ImagePreviewItemView(identifiableImage: identifiableImage) // 단순화된 뷰 사용
+                            ImagePreviewItemView(identifiableImage: identifiableImage)
                                 .padding(.spacing8)
-                                .overlay(alignment: .topTrailing) { // Button을 Overlay로 추가
+                                .overlay(alignment: .topTrailing) {
                                     Button {
-                                        withAnimation { // 애니메이션 적용
+                                        withAnimation {
                                             let updatedPreviewImages = previewImages.filter { $0.id != identifiableImage.id }
                                             previewImages = updatedPreviewImages
                                             selectedImages = updatedPreviewImages.map { $0.photosPickerItem }
@@ -218,7 +252,7 @@ private struct MessageInputView: View {
                                             .font(.system(size: 16))
                                     }
                                 }
-                                .transition(.scale) // Transition 적용
+                                .transition(.scale)
                         }
                     }
                     .padding(.horizontal)
@@ -237,29 +271,116 @@ private struct MessageInputView: View {
                     .foregroundColor(.gray)
             }
             
-            TextField("메시지를 입력해주세요...", text: $messageText)
-                .font(.system(size: 14))
-                .padding(.horizontal, 12) // 기존의 .padding() 대신 수평 패딩만
-                .padding(.vertical, 8) // 기존의 .padding() 대신 수직 패딩만
-                .frame(height: 40)
-                .background(Color(.systemGray6))
-                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            ZStack(alignment: .leading) {
+                if messageText.isEmpty {
+                    Text("메시지를 입력해주세요...")
+                        .font(.system(size: 14))
+                        .foregroundStyle(.gray700)
+                        .padding(.horizontal, 12)
+                }
+
+                TextField("", text: $messageText)
+                    .font(.system(size: 14))
+                    .foregroundStyle(.primary100)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+            }
+            .frame(height: 40)
+            .background(Color(red: 0.91, green: 0.91, blue: 0.93))
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
             
             Button(action: sendMessage) {
                 Image(systemName: "arrow.up.circle.fill")
                     .resizable()
                     .frame(width: 32, height: 32)
+                    .foregroundStyle((messageText.isEmpty && previewImages.isEmpty) ? Color.gray : Color.primary100)
             }
-            .disabled(messageText.isEmpty && previewImages.isEmpty) // previewImages 사용
+            .disabled(messageText.isEmpty && previewImages.isEmpty)
         }
-        .padding(.horizontal, 16) // 전체 입력 바의 수평 패딩
+        .padding(.horizontal, 16)
     }
     
     private func sendMessage() {
         viewModel.input.sendMessage.send((messageText, imagesDataToSend.isEmpty ? nil : imagesDataToSend))
         messageText = ""
         selectedImages = []
-        previewImages = [] // 미리보기 초기화
-        imagesDataToSend = [] // 전송용 데이터 초기화
+        previewImages = []
+        imagesDataToSend = []
+    }
+}
+
+private struct PreviewGalleryViewer: View {
+    let state: ImageGalleryState
+    @Environment(\.dismiss) private var dismiss
+    @State private var selectedIndex: Int
+
+    init(state: ImageGalleryState) {
+        self.state = state
+        _selectedIndex = State(initialValue: state.initialIndex)
+    }
+
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            Color.black.ignoresSafeArea()
+
+            TabView(selection: $selectedIndex) {
+                ForEach(Array(state.items.enumerated()), id: \.element.id) { index, item in
+                    previewContent(for: item)
+                        .tag(index)
+                }
+            }
+            .tabViewStyle(.page(indexDisplayMode: state.items.count > 1 ? .automatic : .never))
+
+            Button {
+                dismiss()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(.primary0)
+                    .frame(width: 40, height: 40)
+                    .background(Color.primary100.opacity(0.45))
+                    .clipShape(Circle())
+            }
+            .padding(.top, .spacing20)
+            .padding(.trailing, .spacing16)
+        }
+        .contentShape(Rectangle())
+    }
+
+    @ViewBuilder
+    private func previewContent(for item: GalleryImageSource) -> some View {
+        GeometryReader { proxy in
+            let width = proxy.size.width
+            let maxHeight = proxy.size.height * 0.82
+
+            ZStack {
+        switch item {
+        case .data(let image):
+            if let uiImage = UIImage(data: image.data) {
+                Image(uiImage: uiImage)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: width)
+                    .frame(maxHeight: maxHeight)
+            }
+        case .url(let url):
+            ChatImageView(url: url, contentMode: .fit)
+                .frame(width: width)
+                        .frame(maxHeight: maxHeight)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+}
+
+private extension View {
+    func hideKeyboard() {
+        UIApplication.shared.sendAction(
+            #selector(UIResponder.resignFirstResponder),
+            to: nil,
+            from: nil,
+            for: nil
+        )
     }
 }
