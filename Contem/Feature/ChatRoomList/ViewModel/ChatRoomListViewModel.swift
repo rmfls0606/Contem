@@ -64,14 +64,18 @@ final class ChatRoomListViewModel: ViewModelType {
 extension ChatRoomListViewModel {
     private func fetchChatRooms() async {
         do {
-            let router = ChatRequest.chatRoomList
-            let result = try await NetworkService.shared.callRequest(router: router, type: ChatRoomResponseListDTO.self)
+            let result = try await NetworkService.shared.callRequest(
+                router: ChatRequest.chatRoomList,
+                type: ChatRoomResponseListDTO.self
+            )
             let chatRoomList = ChatRoomListEntity(from: result)
             await MainActor.run {
                 output.chatRoomList = chatRoomList.roomList
             }
         } catch {
-            print("에러 \(error.localizedDescription)")
+            await MainActor.run {
+                output.chatRoomList = []
+            }
         }
     }
 }
