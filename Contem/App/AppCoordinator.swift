@@ -3,7 +3,7 @@ import Combine
 import iamport_ios
 
 final class AppCoordinator: CoordinatorProtocol, ObservableObject {
-    
+
     private var cancellables = Set<AnyCancellable>()
     
     var currentUserId: String {
@@ -13,6 +13,7 @@ final class AppCoordinator: CoordinatorProtocol, ObservableObject {
     enum Route: Hashable {
         case tabView
         case signin
+        case join
         case shopping
         case shoppingDetail(id: String)
         case createStyle
@@ -80,6 +81,8 @@ final class AppCoordinator: CoordinatorProtocol, ObservableObject {
             MainTabView(coordinator: self)
         case .signin:
             SignInView(coordinator: self)
+        case .join:
+            JoinView(coordinator: self)
         case .shopping:
             let vm = ShoppingViewModel(coordinator: self)
             ShoppingView(viewModel: vm)
