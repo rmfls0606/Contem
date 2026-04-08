@@ -67,8 +67,7 @@ final class SignInViewModel: ViewModelType {
 
         input.signUpButtonTapped
             .sink { [weak self] _ in
-                self?.output.alertMessage = "회원가입 화면은 아직 연결되지 않았습니다."
-                self?.output.showAlert = true
+                self?.coordinator?.push(.join)
             }
             .store(in: &cancellables)
         
@@ -125,6 +124,122 @@ final class SignInViewModel: ViewModelType {
             print(error.localizedDescription)
             output.alertMessage = error.localizedDescription
         }
+    }
+}
+
+@MainActor
+final class JoinViewModel: ViewModelType {
+
+    private weak var coordinator: AppCoordinator?
+    var cancellables = Set<AnyCancellable>()
+
+    var input = Input()
+
+    @Published
+    var output = Output()
+
+    struct Input {
+        let submitButtonTapped = PassthroughSubject<Void, Never>()
+        let backButtonTapped = PassthroughSubject<Void, Never>()
+    }
+
+    struct Output {
+        var email = ""
+        var password = ""
+        var passwordConfirm = ""
+        var nick = ""
+        var name = ""
+        var introduction = ""
+        var phoneNum = ""
+        var hashTagsText = ""
+        var showAlert = false
+        var alertMessage = ""
+        var isSuccessAlert = false
+        var isSubmitting = false
+
+        var isJoinEnabled: Bool {
+            email.isValidEmail &&
+            password.count >= 4 &&
+            password == passwordConfirm &&
+            !nick.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+            !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+            !phoneNum.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+    }
+
+    init(coordinator: AppCoordinator) {
+        self.coordinator = coordinator
+        transform()
+    }
+
+    func transform() {
+        input.backButtonTapped
+            .sink { [weak self] _ in
+                self?.coordinator?.pop()
+            }
+            .store(in: &cancellables)
+
+        input.submitButtonTapped
+            .sink { [weak self] _ in
+                guard let self = self else { return }
+                Task {
+                    await self.join()
+                }
+            }
+            .store(in: &cancellables)
+    }
+
+    func handleAlertDismiss() {
+    }
+
+    private func join() async {
+        guard output.isJoinEnabled else {
+            output.alertMessage = "필수 정보를 모두 올바르게 입력해주세요."
+            output.isSuccessAlert = false
+            output.showAlert = true
+            return
+        }
+
+        output.isSubmitting = true
+
+        let hashTags = output.hashTagsText
+            .split(whereSeparator: { $0 == "," || $0 == " " || $0 == "\n" })
+            .map { rawTag in
+                let trimmed = String(rawTag).trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty else { return "" }
+                return trimmed.hasPrefix("#") ? trimmed : "#\(trimmed)"
+            }
+            .filter { !$0.isEmpty }
+
+        do {
+            let response = try await NetworkService.shared.callRequest(
+                router: UserRequest.join(
+                    email: output.email,
+                    password: output.password,
+                    nick: output.nick,
+                    name: output.name,
+                    introduction: output.introduction,
+                    phoneNum: output.phoneNum,
+                    hashTags: hashTags,
+                    deviceToken: ""
+                ),
+                type: JoinResponseDTO.self
+            )
+
+            try await TokenStorage.shared.storeTokens(
+                access: response.accessToken,
+                refresh: response.refreshToken,
+                userId: response.userId
+            )
+
+            coordinator?.rootRoute = .tabView
+        } catch {
+            output.alertMessage = error.localizedDescription
+            output.isSuccessAlert = false
+            output.showAlert = true
+        }
+
+        output.isSubmitting = false
     }
 }
 

@@ -10,6 +10,16 @@ import Foundation
 enum UserRequest: TargetTypeProtocol {
     // MARK: - Case
     case login(email: String, password: String)
+    case join(
+        email: String,
+        password: String,
+        nick: String,
+        name: String,
+        introduction: String,
+        phoneNum: String,
+        hashTags: [String],
+        deviceToken: String
+    )
     case appleLogin(token: String)
     case kakaoLogin(token: String)
     
@@ -18,6 +28,8 @@ enum UserRequest: TargetTypeProtocol {
         switch self {
         case .login:
             return "/users/login"
+        case .join:
+            return "/users/join"
         case .appleLogin:
             return "/users/login/apple"
         case .kakaoLogin:
@@ -28,7 +40,7 @@ enum UserRequest: TargetTypeProtocol {
     // MARK: - Method
     var method: HTTPMethod {
         switch self {
-        case .login, .appleLogin, .kakaoLogin:
+        case .login, .join, .appleLogin, .kakaoLogin:
             return .post
         }
     }
@@ -46,6 +58,17 @@ enum UserRequest: TargetTypeProtocol {
         switch self {
         case .login(let email, let password):
             ["email": email, "password": password]
+        case .join(let email, let password, let nick, let name, let introduction, let phoneNum, let hashTags, let deviceToken):
+            [
+                "email": email,
+                "password": password,
+                "nick": nick,
+                "name": name,
+                "introduction": introduction,
+                "phoneNum": phoneNum,
+                "hashTags": hashTags,
+                "deviceToken": deviceToken
+            ]
         case .appleLogin(let token):
             ["idToken":token]
         case .kakaoLogin(let token):
@@ -55,14 +78,14 @@ enum UserRequest: TargetTypeProtocol {
     
     var hasAuthorization: Bool{
         switch self {
-        case .login, .appleLogin, .kakaoLogin:
+        case .login, .join, .appleLogin, .kakaoLogin:
             return false
         }
     }
     
     var multipartFiles: [MultipartFile]?{
         switch self {
-        case .login, .appleLogin, .kakaoLogin:
+        case .login, .join, .appleLogin, .kakaoLogin:
             nil
         }
     }
